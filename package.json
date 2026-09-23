@@ -1,0 +1,7 @@
+{
+  "name": "field-health-alert",
+  "private": true,
+  "scripts": {
+    "test": "node test_service.js"
+  }
+}

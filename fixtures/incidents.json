@@ -1,0 +1,50 @@
+{
+  "schema": "field-health-alert/incidents-v1",
+  "description": "既有高温与高原事件切片，供乱序/重复回放联调。observed_at 为设备时钟，sampled_at 为采样真实时刻。",
+  "incidents": [
+    {
+      "incident_id": "INC-HEAT-01",
+      "scenario": "高温",
+      "subject_id": "P-01",
+      "base_time": "2026-09-10T08:00:00Z",
+      "slices": [
+        {"slice_id": "H-TH-1", "device_id": "TH-1", "seq": 1, "sampled_at": "2026-09-10T08:00:00Z", "observed_at": "2026-09-10T08:00:00Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:00:00Z", "v": 37.4}]},
+        {"slice_id": "H-OX-1", "device_id": "OX-1", "seq": 1, "sampled_at": "2026-09-10T08:00:00Z", "observed_at": "2026-09-10T08:00:00Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:00:00Z", "v": 98}]},
+        {"slice_id": "H-TH-2", "device_id": "TH-1", "seq": 2, "sampled_at": "2026-09-10T08:00:30Z", "observed_at": "2026-09-10T08:00:30Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:00:30Z", "v": 37.8}]},
+        {"slice_id": "H-OX-2", "device_id": "OX-1", "seq": 2, "sampled_at": "2026-09-10T08:00:30Z", "observed_at": "2026-09-10T08:00:30Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:00:30Z", "v": 97}]},
+        {"slice_id": "H-TH-3", "device_id": "TH-1", "seq": 3, "sampled_at": "2026-09-10T08:01:00Z", "observed_at": "2026-09-10T08:01:00Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:01:00Z", "v": 38.3}]},
+        {"slice_id": "H-OX-3", "device_id": "OX-1", "seq": 3, "sampled_at": "2026-09-10T08:01:00Z", "observed_at": "2026-09-10T08:01:00Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:01:00Z", "v": 97}]},
+        {"slice_id": "H-TH-4", "device_id": "TH-1", "seq": 4, "sampled_at": "2026-09-10T08:01:30Z", "observed_at": "2026-09-10T08:01:30Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:01:30Z", "v": 38.9}]},
+        {"slice_id": "H-OX-4", "device_id": "OX-1", "seq": 4, "sampled_at": "2026-09-10T08:01:30Z", "observed_at": "2026-09-10T08:01:30Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:01:30Z", "v": 96}]},
+        {"slice_id": "H-TH-5", "device_id": "TH-1", "seq": 5, "sampled_at": "2026-09-10T08:02:00Z", "observed_at": "2026-09-10T08:02:00Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:02:00Z", "v": 39.3}]},
+        {"slice_id": "H-OX-5", "device_id": "OX-1", "seq": 5, "sampled_at": "2026-09-10T08:02:00Z", "observed_at": "2026-09-10T08:02:00Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:02:00Z", "v": 95}]},
+        {"slice_id": "H-TH-6", "device_id": "TH-1", "seq": 6, "sampled_at": "2026-09-10T08:02:30Z", "observed_at": "2026-09-10T08:02:30Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:02:30Z", "v": 39.8}]},
+        {"slice_id": "H-OX-6", "device_id": "OX-1", "seq": 6, "sampled_at": "2026-09-10T08:02:30Z", "observed_at": "2026-09-10T08:02:30Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:02:30Z", "v": 94}]},
+        {"slice_id": "H-TH-7", "device_id": "TH-1", "seq": 7, "sampled_at": "2026-09-10T08:03:00Z", "observed_at": "2026-09-10T08:03:00Z", "samples": [{"signal": "core_temp", "t": "2026-09-10T08:03:00Z", "v": 40.4}]},
+        {"slice_id": "H-OX-7", "device_id": "OX-1", "seq": 7, "sampled_at": "2026-09-10T08:03:00Z", "observed_at": "2026-09-10T08:03:00Z", "samples": [{"signal": "spo2", "t": "2026-09-10T08:03:00Z", "v": 93}]}
+      ]
+    },
+    {
+      "incident_id": "INC-ALT-01",
+      "scenario": "高原",
+      "subject_id": "P-02",
+      "base_time": "2026-09-11T09:00:00Z",
+      "slices": [
+        {"slice_id": "A-OX-1", "device_id": "OX-2", "seq": 1, "sampled_at": "2026-09-11T09:00:00Z", "observed_at": "2026-09-11T09:00:00Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:00:00Z", "v": 96}]},
+        {"slice_id": "A-EG-1", "device_id": "EG-1", "seq": 1, "sampled_at": "2026-09-11T09:00:00Z", "observed_at": "2026-09-11T09:00:00Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:00:00Z", "v": 0}]},
+        {"slice_id": "A-OX-2", "device_id": "OX-2", "seq": 2, "sampled_at": "2026-09-11T09:00:30Z", "observed_at": "2026-09-11T09:00:30Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:00:30Z", "v": 95}]},
+        {"slice_id": "A-EG-2", "device_id": "EG-1", "seq": 2, "sampled_at": "2026-09-11T09:00:30Z", "observed_at": "2026-09-11T09:00:30Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:00:30Z", "v": 0}]},
+        {"slice_id": "A-OX-3", "device_id": "OX-2", "seq": 3, "sampled_at": "2026-09-11T09:01:00Z", "observed_at": "2026-09-11T09:01:00Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:01:00Z", "v": 93}]},
+        {"slice_id": "A-EG-3", "device_id": "EG-1", "seq": 3, "sampled_at": "2026-09-11T09:01:00Z", "observed_at": "2026-09-11T09:01:00Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:01:00Z", "v": 0}]},
+        {"slice_id": "A-OX-4", "device_id": "OX-2", "seq": 4, "sampled_at": "2026-09-11T09:01:30Z", "observed_at": "2026-09-11T09:01:30Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:01:30Z", "v": 91}]},
+        {"slice_id": "A-EG-4", "device_id": "EG-1", "seq": 4, "sampled_at": "2026-09-11T09:01:30Z", "observed_at": "2026-09-11T09:01:30Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:01:30Z", "v": 0}]},
+        {"slice_id": "A-OX-5", "device_id": "OX-2", "seq": 5, "sampled_at": "2026-09-11T09:02:00Z", "observed_at": "2026-09-11T09:02:00Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:02:00Z", "v": 89}]},
+        {"slice_id": "A-EG-5", "device_id": "EG-1", "seq": 5, "sampled_at": "2026-09-11T09:02:00Z", "observed_at": "2026-09-11T09:02:00Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:02:00Z", "v": 0}]},
+        {"slice_id": "A-OX-6", "device_id": "OX-2", "seq": 6, "sampled_at": "2026-09-11T09:02:30Z", "observed_at": "2026-09-11T09:02:30Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:02:30Z", "v": 87}]},
+        {"slice_id": "A-EG-6", "device_id": "EG-1", "seq": 6, "sampled_at": "2026-09-11T09:02:30Z", "observed_at": "2026-09-11T09:02:30Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:02:30Z", "v": 0}]},
+        {"slice_id": "A-OX-7", "device_id": "OX-2", "seq": 7, "sampled_at": "2026-09-11T09:03:00Z", "observed_at": "2026-09-11T09:03:00Z", "samples": [{"signal": "spo2", "t": "2026-09-11T09:03:00Z", "v": 85}]},
+        {"slice_id": "A-EG-7", "device_id": "EG-1", "seq": 7, "sampled_at": "2026-09-11T09:03:00Z", "observed_at": "2026-09-11T09:03:00Z", "samples": [{"signal": "eeg", "t": "2026-09-11T09:03:00Z", "v": 1}]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "schema": "field-health-alert/protocol-v1",
+  "version": "2026.09-mountain-fire-v1",
+  "window_seconds": 60,
+  "allowed_lateness_seconds": 120,
+  "emit_period_seconds": 30,
+  "clock_drift_limit_ms": 5000,
+  "required_signals": ["spo2", "core_temp", "eeg"],
+  "profiles": {
+    "高温": {"required_signals": ["spo2", "core_temp"]},
+    "高原": {"required_signals": ["spo2", "eeg"]},
+    "综合": {"required_signals": ["spo2", "core_temp", "eeg"]}
+  },
+  "penalties": {
+    "missing_sensor": 0.2,
+    "clock_drift": 0.2,
+    "contradiction": 0.25,
+    "seq_gap": 0.15
+  },
+  "confidence_floor": {
+    "alert": 0.75,
+    "intervene": 0.85
+  },
+  "signal_tolerance": {
+    "spo2": 3.0,
+    "core_temp": 0.5,
+    "eeg": 1
+  },
+  "devices": [
+    {
+      "device_id": "OX-1",
+      "sensors": ["spo2"],
+      "calibration": {
+        "spo2": {"cal_id": "cal-OX1-2026-09", "gain": 1.0, "offset": 0.0}
+      }
+    },
+    {
+      "device_id": "OX-2",
+      "sensors": ["spo2"],
+      "calibration": {
+        "spo2": {"cal_id": "cal-OX2-2026-09", "gain": 1.0, "offset": 0.0}
+      }
+    },
+    {
+      "device_id": "TH-1",
+      "sensors": ["core_temp"],
+      "calibration": {
+        "core_temp": {"cal_id": "cal-TH1-2026-09", "gain": 1.0, "offset": -0.1}
+      }
+    },
+    {
+      "device_id": "EG-1",
+      "sensors": ["eeg"],
+      "calibration": {
+        "eeg": {"cal_id": "cal-EG1-2026-09", "gain": 1.0, "offset": 0.0}
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "R-SPO2-LOW",
+      "signal": "spo2",
+      "metric": "min",
+      "direction": "low",
+      "note": "血氧持续偏低提示缺氧，高原演训重点观测",
+      "bands": {"review": 94, "alert": 90, "intervene": 86}
+    },
+    {
+      "id": "R-TEMP-HIGH",
+      "signal": "core_temp",
+      "metric": "max",
+      "direction": "high",
+      "note": "核心温度过高提示热射病风险，山火与高温演训重点观测",
+      "bands": {"review": 38.0, "alert": 39.0, "intervene": 40.0}
+    },
+    {
+      "id": "R-EEG-SEIZURE",
+      "signal": "eeg",
+      "metric": "max",
+      "direction": "high",
+      "note": "脑电惊厥样信号出现即按高危处置",
+      "bands": {"intervene": 1}
+    }
+  ],
+  "escalation": {
+    "normal": [],
+    "review": ["现场复核"],
+    "alert": ["现场复核", "降温补水"],
+    "intervene": ["现场复核", "降温补水", "转运"]
+  }
+}
