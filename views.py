@@ -1,8 +1,11 @@
 """按角色裁剪的履职视图：只呈现履职所需状态，不暴露完整健康档案。
 
 - 指挥人员：编组状态与待执行/执行中的处置，用于调度撤离，不含原始体征；
-- 现场卫生员：本人处置所需的动作依据与质量提示，用于现场复核；
-- 值班军医：完整评估、规则阈值、校准编号与覆盖记录，用于解释与裁决；
+  切片冲突只给计数，用于提示装备可信度，不暴露读数；
+- 现场卫生员：本人处置所需的动作依据与质量提示（含冲突设备与差异字段），
+  用于现场复核，不含冲突读数；
+- 值班军医：完整评估、规则阈值、校准编号、覆盖记录与切片冲突详情，用于
+  解释与裁决；
 - 任务人员：仅本人状态与需配合的动作提示。
 """
 
@@ -26,6 +29,8 @@ def _commander_row(status):
         ],
         "overridden": status["override"] is not None,
         "window": status["latest_window"],
+        # 只给计数：指挥人员需要知道装备数据是否可信，不需要看到读数。
+        "slice_conflict_count": len(status.get("slice_conflicts", [])),
     }
 
 
@@ -64,6 +69,18 @@ def render_corpsman(mission, subject_id):
             flag["code"]
             for record in mission.subjects[subject_id].timeline.finalized
             for flag in record["assessment"].get("quality_flags", [])
+        ],
+        # 卫生员现场复核需要知道哪台设备、哪个序号出了内容冲突，
+        # 但不展示冲突涉及的具体读数。
+        "slice_conflicts": [
+            {
+                "slice_id": conflict["slice_id"],
+                "device_id": conflict["device_id"],
+                "seq": conflict["seq"],
+                "diff": conflict.get("diff", []),
+                "received_at": conflict["received_at"],
+            }
+            for conflict in mission.slice_conflicts(subject_id)
         ],
     }
 

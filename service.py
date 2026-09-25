@@ -121,6 +121,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self._send_json(200, {"outcome": result["outcome"],
                                           "slice_id": result.get("slice_id"),
+                                          "rejection": result.get("rejection"),
                                           "finalized_count": len(
                                               result.get("finalized", []))})
                     return

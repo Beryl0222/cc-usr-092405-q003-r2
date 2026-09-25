@@ -340,10 +340,34 @@ class Mission:
         })
 
     def status(self, subject_id):
-        return self._subject(subject_id).status_payload()
+        payload = self._subject(subject_id).status_payload()
+        payload["slice_conflicts"] = self.slice_conflicts(subject_id)
+        return payload
 
     def roster_status(self):
-        return [m.status_payload() for m in self.subjects.values()]
+        return [self.status(sid) for sid in self.subjects]
+
+    def slice_conflicts(self, subject_id=None):
+        """从哈希链日志汇总切片冲突登记。
+
+        日志是唯一事实来源：本地拒绝与回连合并进来的 SLICE_REJECTED 同构，
+        因此离线合并、任务重建之后，视图与后续判断都保持一致。
+        """
+        records = []
+        for entry in self.journal.entries:
+            if entry["type"] != "SLICE_REJECTED":
+                continue
+            rejection = entry["payload"].get("rejection", {})
+            if rejection.get("code") != "SLICE_CONFLICT":
+                continue
+            if subject_id is not None and entry["payload"].get("subject_id") != subject_id:
+                continue
+            records.append({
+                "journal_seq": entry["seq"],
+                "subject_id": entry["payload"].get("subject_id"),
+                **rejection,
+            })
+        return records
 
     def explanation(self, subject_id):
         """返回某动作/当前状态的完整依据：规则、阈值、校准与输入窗口。"""
@@ -359,4 +383,5 @@ class Mission:
             "latest_assessment": latest,
             "actions": list(monitor.actions.values()),
             "override": monitor.override,
+            "slice_conflicts": self.slice_conflicts(subject_id),
         }

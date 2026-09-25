@@ -1,5 +1,6 @@
 """HTTP 端到端契约：冻结、离线灌包、处置、覆盖、视图与回连合并。"""
 
+import copy
 import json
 import os
 import threading
@@ -181,6 +182,80 @@ class HttpApiTest(unittest.TestCase):
         status, body = post(self.base, "/missions", {"mission_id": "X"})
         self.assertEqual(status, 400)
         self.assertIn("subject_ids", body["message"])
+
+    def test_slice_conflict_rejected_and_visible_without_level_change(self):
+        self._freeze_and_feed("M-HTTP-CF")
+        sid = self.heat["subject_id"]
+        _, before = get(self.base, f"/missions/M-HTTP-CF/status?subject_id={sid}")
+        self.assertEqual(before["effective_level"], "intervene")
+
+        # 逐字节语义一致的重投：幂等重复。
+        original = self.heat["slices"][0]
+        status, body = post(self.base, "/missions/M-HTTP-CF/ingest", {
+            "subject_id": sid, "slice": original,
+            "received_at": "2026-09-10T08:07:00Z",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["outcome"], "duplicate")
+        self.assertIsNone(body["rejection"])
+
+        # 同一切片编号携带不同读数（疑似固件回滚）：登记冲突并拒绝。
+        clash = copy.deepcopy(original)
+        clash["samples"][0]["v"] = 45.0
+        status, body = post(self.base, "/missions/M-HTTP-CF/ingest", {
+            "subject_id": sid, "slice": clash,
+            "received_at": "2026-09-10T08:07:30Z",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["outcome"], "rejected")
+        self.assertEqual(body["rejection"]["code"], "SLICE_CONFLICT")
+        self.assertEqual(body["rejection"]["diff"], ["samples"])
+        # 同一冲突内容再次投递，判定保持一致。
+        status, body2 = post(self.base, "/missions/M-HTTP-CF/ingest", {
+            "subject_id": sid, "slice": clash,
+            "received_at": "2026-09-10T08:07:40Z",
+        })
+        self.assertEqual(body2["rejection"]["code"], "SLICE_CONFLICT")
+
+        # 风险等级不被冲突切片推进。
+        _, after = get(self.base, f"/missions/M-HTTP-CF/status?subject_id={sid}")
+        self.assertEqual(after["effective_level"], "intervene")
+        self.assertEqual(len(after["slice_conflicts"]), 2)
+
+        # 冲突进入不可篡改日志，哈希链完整。
+        _, journal = get(self.base, "/missions/M-HTTP-CF/journal")
+        self.assertTrue(journal["intact"])
+        conflicts = [
+            e for e in journal["journal"]["entries"]
+            if e["type"] == "SLICE_REJECTED"
+            and e["payload"]["rejection"]["code"] == "SLICE_CONFLICT"
+        ]
+        self.assertEqual(len(conflicts), 2)
+
+        # 军医视图可见冲突细节；指挥视图只有计数且无读数泄漏。
+        _, medic = get(self.base, "/missions/M-HTTP-CF/view?"
+                       + urlencode({"role": "值班军医", "subject_id": sid}))
+        self.assertEqual(medic["detail"]["slice_conflicts"][0]["diff"], ["samples"])
+        _, commander = get(self.base, "/missions/M-HTTP-CF/view?"
+                           + urlencode({"role": "指挥人员"}))
+        self.assertEqual(commander["roster"][0]["slice_conflict_count"], 2)
+        serialized = json.dumps(commander, ensure_ascii=False)
+        self.assertNotIn("45.0", serialized)
+        self.assertNotIn('"established"', serialized)
+
+    def test_unregistered_device_rejected_over_http(self):
+        self._freeze_and_feed("M-HTTP-DEV")
+        sid = self.heat["subject_id"]
+        rogue = copy.deepcopy(self.heat["slices"][0])
+        rogue["slice_id"] = "ROGUE-1"
+        rogue["device_id"] = "EVIL-9"
+        status, body = post(self.base, "/missions/M-HTTP-DEV/ingest", {
+            "subject_id": sid, "slice": rogue,
+            "received_at": "2026-09-10T08:07:00Z",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["outcome"], "rejected")
+        self.assertEqual(body["rejection"]["code"], "UNKNOWN_DEVICE")
 
 
 if __name__ == "__main__":

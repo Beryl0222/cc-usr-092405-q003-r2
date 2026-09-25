@@ -6,7 +6,9 @@
   不能混入同一条时间线）；
 - 按 (设备编号, 本地日志序号) 定序后再汇入，多设备汇入结果与送达顺序
   无关，重复投递幂等；
-- 已定稿评估只按输入窗口去重采纳，内容原样保留，不重算、不补造。
+- 已定稿评估只按输入窗口去重采纳，内容原样保留，不重算、不补造；
+- 切片冲突登记随包回放：汇入节点据此重建切片指纹，对同一编号切片的
+  重复/冲突判断与首次接收节点一致。
 """
 
 MERGEABLE_TYPES = {"ASSESSMENT", "SLICE_REJECTED", "ACTION", "OVERRIDE", "RESOLVED"}
@@ -58,7 +60,10 @@ def _replay_state(mission, entry):
         monitor.apply_override_entry(payload)
     elif etype == "RESOLVED":
         monitor.apply_resolved_entry(payload)
-    # SLICE_REJECTED 只落日志，无需状态回放。
+    elif etype == "SLICE_REJECTED":
+        # 冲突登记随包回放：本节点重建切片指纹，此后对同一编号切片
+        # 的重复/冲突判断与首次接收节点一致。
+        monitor.timeline.note_merged_rejection(payload["rejection"])
 
 
 def merge_bundles(mission, bundles):

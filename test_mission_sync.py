@@ -302,5 +302,130 @@ class SyncMergeTest(unittest.TestCase):
         self.assertEqual(status["override"]["reason"], "指挥要求边观察边后撤")
 
 
+class SliceConflictMissionTest(unittest.TestCase):
+    """切片冲突进入不可篡改日志与角色化视图，但不推进风险等级。"""
+
+    def _mission_with_conflict(self, mission_id="M-CF"):
+        mission, data = build_heat_mission(mission_id)
+        base = parse_ts(data["base_time"])
+        first = data["slices"][0]
+        mission.ingest(data["subject_id"], first, base - 1)
+        clash = copy.deepcopy(first)
+        clash["samples"][0]["v"] = 45.0  # 同编号不同读数，疑似固件回滚
+        result = mission.ingest(data["subject_id"], clash, base)
+        return mission, data, result
+
+    def test_conflict_is_rejected_and_journaled_with_intact_chain(self):
+        mission, data, result = self._mission_with_conflict()
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["rejection"]["code"], "SLICE_CONFLICT")
+        entries = [e for e in mission.journal.entries
+                   if e["type"] == "SLICE_REJECTED"]
+        self.assertEqual(len(entries), 1)
+        payload = entries[0]["payload"]["rejection"]
+        self.assertEqual(payload["code"], "SLICE_CONFLICT")
+        self.assertEqual(payload["diff"], ["samples"])
+        self.assertEqual(payload["established"]["samples"][0]["v"], 37.4)
+        self.assertEqual(payload["received"]["samples"][0]["v"], 45.0)
+        self.assertNotEqual(payload["expected_hash"], payload["got_hash"])
+        ok, broken = mission.journal.verify_chain()
+        self.assertTrue(ok)
+        self.assertIsNone(broken)
+
+    def test_conflict_does_not_change_effective_level_or_actions(self):
+        mission, data = build_heat_mission("M-CF-LV")
+        feed_to_end(mission, data)
+        before = mission.status(data["subject_id"])
+        self.assertEqual(before["effective_level"], "intervene")
+        clash = copy.deepcopy(data["slices"][-1])
+        clash["samples"][0]["v"] = 99.0
+        result = mission.ingest(data["subject_id"], clash,
+                                parse_ts(data["base_time"]) + 1000)
+        self.assertEqual(result["outcome"], "rejected")
+        after = mission.status(data["subject_id"])
+        self.assertEqual(after["effective_level"], "intervene")
+        self.assertEqual(after["state"], before["state"])
+        self.assertEqual(
+            json.dumps(after["actions"], sort_keys=True, ensure_ascii=False),
+            json.dumps(before["actions"], sort_keys=True, ensure_ascii=False),
+        )
+        self.assertEqual(len(after["slice_conflicts"]), 1)
+        # 冲突不产生任何新评估。
+        self.assertEqual(
+            len([e for e in mission.journal.entries if e["type"] == "ASSESSMENT"]),
+            4,
+        )
+
+    def test_role_views_expose_conflict_by_need_to_know(self):
+        mission, data, _ = self._mission_with_conflict("M-CF-VIEW")
+        sid = data["subject_id"]
+        # 值班军医：完整冲突细节，含双向哈希与差异字段。
+        medic = render(mission, "值班军医", sid)
+        conflicts = medic["detail"]["slice_conflicts"]
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["code"], "SLICE_CONFLICT")
+        self.assertEqual(conflicts[0]["diff"], ["samples"])
+        # 指挥人员：只有计数，序列化视图不得泄漏读数与冲突内容。
+        commander = render(mission, "指挥人员")
+        self.assertEqual(commander["roster"][0]["slice_conflict_count"], 1)
+        serialized = json.dumps(commander, ensure_ascii=False)
+        for forbidden in ("45.0", "37.4", '"established"', '"received"',
+                          "expected_hash", "core_temp"):
+            self.assertNotIn(forbidden, serialized)
+        # 现场卫生员：可见设备/序号/差异字段用于现场复核，不见读数。
+        corpsman = render(mission, "现场卫生员", sid)
+        self.assertEqual(len(corpsman["slice_conflicts"]), 1)
+        self.assertEqual(corpsman["slice_conflicts"][0]["device_id"], "TH-1")
+        self.assertEqual(corpsman["slice_conflicts"][0]["diff"], ["samples"])
+        c_serialized = json.dumps(corpsman, ensure_ascii=False)
+        for forbidden in ("45.0", "37.4", '"established"', '"received"'):
+            self.assertNotIn(forbidden, c_serialized)
+        # 任务人员视图保持最小知情，不含冲突信息。
+        personnel = render(mission, "任务人员", sid)
+        self.assertEqual(set(personnel.keys()),
+                         {"view", "subject_id", "state", "instructions"})
+
+
+class SliceConflictMergeTest(unittest.TestCase):
+    def test_conflict_replays_through_merge_and_stays_consistent(self):
+        proto = protocol()
+        heat = incidents()["INC-HEAT-01"]
+        sid = heat["subject_id"]
+        base = parse_ts(heat["base_time"])
+
+        edge = Mission("M-CF-SYNC", proto, [sid], heat["base_time"],
+                       profiles={sid: "高温"})
+        first = heat["slices"][0]
+        edge.ingest(sid, first, base - 1)
+        clash = copy.deepcopy(first)
+        clash["samples"][0]["v"] = 45.0
+        edge.ingest(sid, clash, base)
+        bundle = export_bundle(edge, "EDGE-A")
+        self.assertTrue(any(e["type"] == "SLICE_REJECTED"
+                            for e in bundle["entries"]))
+
+        # 回连汇入全新节点（等价于任务重建/重启后的恢复）。
+        host = Mission("M-CF-SYNC", proto, [sid], heat["base_time"],
+                       profiles={sid: "高温"})
+        report = merge_bundles(host, [bundle])
+        self.assertEqual(len(report["merged"]), 1)
+        self.assertEqual(report["merged"][0]["type"], "SLICE_REJECTED")
+        # 主机日志可见冲突，哈希链完整。
+        self.assertEqual(len(host.slice_conflicts(sid)), 1)
+        ok, _ = host.journal.verify_chain()
+        self.assertTrue(ok)
+        # 主机对同一冲突切片作出一致判断：仍判冲突而非接收。
+        again = host.ingest(sid, copy.deepcopy(clash), base + 10)
+        self.assertEqual(again["outcome"], "rejected")
+        self.assertEqual(again["rejection"]["code"], "SLICE_CONFLICT")
+        # 原始切片判为幂等重复（其内容已通过定稿评估体现），不被顶掉。
+        dup = host.ingest(sid, copy.deepcopy(first), base + 20)
+        self.assertEqual(dup["outcome"], "duplicate")
+        # 合并一条 + 本机再判一条，冲突登记全程可追溯。
+        self.assertEqual(len(host.slice_conflicts(sid)), 2)
+        ok, _ = host.journal.verify_chain()
+        self.assertTrue(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

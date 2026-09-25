@@ -280,5 +280,184 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(result["rejection"]["code"], "UNKNOWN_DEVICE")
 
 
+class SliceConflictTest(unittest.TestCase):
+    """同 slice_id 携带不同内容（疑似固件回滚）的冲突判定。"""
+
+    def setUp(self):
+        self.protocol = load_protocol()
+        self.incident = {i["incident_id"]: i
+                         for i in load_incidents()}["INC-HEAT-01"]
+        self.required = self.protocol.profiles["高温"]
+
+    def _timeline(self):
+        return Timeline(self.incident["subject_id"], self.protocol, self.required)
+
+    def _first_slice(self):
+        return copy.deepcopy(self.incident["slices"][0])  # H-TH-1，TH-1 seq=1
+
+    def test_identical_redelivery_stays_idempotent(self):
+        timeline = self._timeline()
+        slice_ref = self._first_slice()
+        at = parse_ts(slice_ref["sampled_at"])
+        self.assertEqual(timeline.ingest(slice_ref, at)["outcome"], "accepted")
+        # 逐字节语义一致的重投（含时间格式等价写法）仍然幂等。
+        again = copy.deepcopy(slice_ref)
+        again["sampled_at"] = "2026-09-10T08:00:00+00:00"
+        result = timeline.ingest(again, at + 1)
+        self.assertEqual(result["outcome"], "duplicate")
+        self.assertEqual(timeline.rejected, [])
+
+    def test_changed_reading_is_conflict_and_never_enters_window(self):
+        timeline = self._timeline()
+        slice_ref = self._first_slice()
+        at = parse_ts(slice_ref["sampled_at"])
+        timeline.ingest(slice_ref, at)
+        clash = copy.deepcopy(slice_ref)
+        clash["samples"][0]["v"] = 45.0  # 固件回滚后同编号携带的异常读数
+        result = timeline.ingest(clash, at + 1)
+        self.assertEqual(result["outcome"], "rejected")
+        rejection = result["rejection"]
+        self.assertEqual(rejection["code"], "SLICE_CONFLICT")
+        self.assertEqual(rejection["diff"], ["samples"])
+        self.assertNotEqual(rejection["expected_hash"], rejection["got_hash"])
+        self.assertEqual(rejection["established"]["samples"][0]["v"], 37.4)
+        self.assertEqual(rejection["received"]["samples"][0]["v"], 45.0)
+        # 冲突切片不进入窗口：定稿后窗口里只有已接收版本的读数。
+        timeline.advance(at + self.protocol.window_seconds
+                         + self.protocol.allowed_lateness_seconds + 1)
+        self.assertEqual(len(timeline.levels()), 1)
+        hit = next(h for h in timeline.levels()[0]["rule_hits"]
+                   if h["rule_id"] == "R-TEMP-HIGH")
+        self.assertEqual(hit["value"], 37.3)  # 37.4 经冻结校准 -0.1
+        self.assertEqual(hit["sample_count"], 1)
+        self.assertEqual(timeline.levels()[0]["level"], "normal")
+
+    def test_device_seq_and_sampled_at_changes_are_conflicts(self):
+        cases = [
+            ("device_id", lambda s: s.update(device_id="OX-1"), ["device_id"]),
+            ("seq", lambda s: s.update(seq=9), ["seq"]),
+            ("sampled_at",
+             lambda s: s.update(sampled_at="2026-09-10T08:00:15Z"),
+             ["sampled_at"]),
+        ]
+        for field, mutate, expected_diff in cases:
+            with self.subTest(field=field):
+                timeline = self._timeline()
+                slice_ref = self._first_slice()
+                at = parse_ts(slice_ref["sampled_at"])
+                timeline.ingest(slice_ref, at)
+                clash = copy.deepcopy(slice_ref)
+                mutate(clash)
+                result = timeline.ingest(clash, at + 1)
+                self.assertEqual(result["outcome"], "rejected")
+                self.assertEqual(result["rejection"]["code"], "SLICE_CONFLICT")
+                self.assertEqual(result["rejection"]["diff"], expected_diff)
+
+    def test_conflict_after_finalization_is_conflict_not_late(self):
+        timeline = self._timeline()
+        slice_ref = self._first_slice()
+        at = parse_ts(slice_ref["sampled_at"])
+        timeline.ingest(slice_ref, at)
+        finalize_at = (at + self.protocol.window_seconds
+                       + self.protocol.allowed_lateness_seconds + 1)
+        timeline.advance(finalize_at)
+        self.assertEqual(len(timeline.finalized), 1)
+        frozen = json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False)
+        # 窗口已定稿：同编号不同读数仍判冲突，而不是按迟到处理。
+        clash = copy.deepcopy(slice_ref)
+        clash["samples"][0]["v"] = 45.0
+        result = timeline.ingest(clash, finalize_at + 10)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["rejection"]["code"], "SLICE_CONFLICT")
+        # 内容一致的重投在定稿后仍是幂等重复，不是迟到。
+        dup = timeline.ingest(copy.deepcopy(slice_ref), finalize_at + 20)
+        self.assertEqual(dup["outcome"], "duplicate")
+        self.assertEqual(
+            json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False),
+            frozen,
+        )
+
+    def test_conflict_does_not_advance_risk_level(self):
+        timeline = self._timeline()
+        slices = self.incident["slices"]
+        base = parse_ts(self.incident["base_time"])
+        for index, slice_ref in enumerate(slices):
+            timeline.ingest(slice_ref, base - 1 + index * 0.001)
+        max_sampled = max(parse_ts(s["sampled_at"]) for s in slices)
+        timeline.advance(max_sampled + self.protocol.allowed_lateness_seconds
+                         + self.protocol.window_seconds + 1)
+        self.assertEqual(
+            [e["level"] for e in timeline.levels()],
+            ["normal", "review", "alert", "intervene"],
+        )
+        frozen = json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False)
+        # 冲突切片携带致命读数，也不得推进风险等级或重写任何窗口。
+        clash = copy.deepcopy(slices[0])
+        clash["samples"][0]["v"] = 99.9
+        result = timeline.ingest(clash, max_sampled + 500)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["finalized"], [])
+        self.assertEqual(
+            json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False),
+            frozen,
+        )
+
+    def test_conflict_judgment_is_deterministic_on_redelivery(self):
+        timeline = self._timeline()
+        slice_ref = self._first_slice()
+        at = parse_ts(slice_ref["sampled_at"])
+        timeline.ingest(slice_ref, at)
+        clash = copy.deepcopy(slice_ref)
+        clash["samples"][0]["v"] = 41.0
+        first = timeline.ingest(clash, at + 1)
+        second = timeline.ingest(copy.deepcopy(clash), at + 2)
+        for result in (first, second):
+            self.assertEqual(result["outcome"], "rejected")
+            self.assertEqual(result["rejection"]["code"], "SLICE_CONFLICT")
+        conflicts = [r for r in timeline.rejected if r["code"] == "SLICE_CONFLICT"]
+        self.assertEqual(len(conflicts), 2)
+        self.assertEqual(conflicts[0]["got_hash"], conflicts[1]["got_hash"])
+
+    def test_full_replay_after_device_restart_is_consistent(self):
+        # 设备重启后全量重传：原切片幂等，冲突切片仍判冲突，时间线不变。
+        timeline = self._timeline()
+        slices = self.incident["slices"]
+        base = parse_ts(self.incident["base_time"])
+        for index, slice_ref in enumerate(slices):
+            timeline.ingest(slice_ref, base - 1 + index * 0.001)
+        max_sampled = max(parse_ts(s["sampled_at"]) for s in slices)
+        timeline.advance(max_sampled + self.protocol.allowed_lateness_seconds
+                         + self.protocol.window_seconds + 1)
+        frozen = json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False)
+        clash = copy.deepcopy(slices[2])
+        clash["samples"][0]["v"] = 44.0
+        timeline.ingest(clash, max_sampled + 400)
+        outcomes = [
+            timeline.ingest(copy.deepcopy(s), max_sampled + 500 + i)["outcome"]
+            for i, s in enumerate(slices)
+        ]
+        self.assertEqual(set(outcomes), {"duplicate"})
+        again = timeline.ingest(copy.deepcopy(clash), max_sampled + 600)
+        self.assertEqual(again["rejection"]["code"], "SLICE_CONFLICT")
+        self.assertEqual(
+            json.dumps(timeline.levels(), sort_keys=True, ensure_ascii=False),
+            frozen,
+        )
+
+    def test_uncalibrated_signal_rejected_without_side_effects(self):
+        # 校准规则回归：设备未登记的信号整切片拒绝，不留副作用。
+        timeline = self._timeline()
+        bad = {
+            "slice_id": "U-1", "device_id": "TH-1", "seq": 1,
+            "sampled_at": "2026-09-10T08:00:00Z",
+            "observed_at": "2026-09-10T08:00:00Z",
+            "samples": [{"signal": "spo2", "t": "2026-09-10T08:00:00Z", "v": 90}],
+        }
+        result = timeline.ingest(bad, parse_ts("2026-09-10T08:00:00Z"))
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["rejection"]["code"], "UNCALIBRATED_SIGNAL")
+        self.assertEqual(timeline.levels(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
