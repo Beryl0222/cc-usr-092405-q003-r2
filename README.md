@@ -28,11 +28,11 @@
 | `protocol.py` | 冻结协议：版本/哈希、阈值档位、设备校准、风险方案、任务剖面 |
 | `timeutil.py` | UTC 时间解析与固定窗口归并 |
 | `engine.py` | 纯函数规则评分、置信度扣减与等级钳制 |
-| `timeline.py` | 乱序/重复/迟到切片处理、水位线定稿、缺口与漂移判定 |
+| `timeline.py` | 乱序/重复/迟到切片处理、切片内容指纹与冲突拒绝、水位线定稿、缺口与漂移判定 |
 | `journal.py` | 追加式哈希链日志（只追加，可校验篡改） |
-| `mission.py` | 任务冻结、状态机、动作处置、军医覆盖与解除 |
-| `views.py` | 指挥人员/军医/卫生员/任务人员四种履职视图 |
-| `sync.py` | 断网回连后按设备序列定序、幂等、按协议哈希守门的安全合并 |
+| `mission.py` | 任务冻结、状态机、动作处置、军医覆盖与解除、从日志恢复 |
+| `views.py` | 指挥人员/军医/卫生员/任务人员四种履职视图（含冲突的角色化呈现） |
+| `sync.py` | 断网回连后按设备序列定序、幂等、按协议哈希与切片指纹守门的安全合并 |
 | `service.py` | HTTP 入口，可完全离线运行 |
 
 状态机：`监测中 → 需复核 → 已预警 → 干预中 → 已解除`。
@@ -42,7 +42,7 @@
 ```bash
 python3 service.py --check        # 校验冻结协议并打印版本哈希
 python3 service.py --port 8000    # 启动离线边缘服务
-npm test                          # 36 项测试：引擎/时间线/任务/合并/HTTP 契约
+npm test                          # 58 项测试：引擎/时间线/任务/冲突/合并/HTTP 契约
 python3 -m compileall -q .        # 编译检查全部 Python 模块
 ```
 
@@ -51,6 +51,7 @@ python3 -m compileall -q .        # 编译检查全部 Python 模块
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/missions` | 任务开始：冻结协议、编组与剖面，返回协议哈希 |
+| POST | `/missions/restore` | 进程重启后从哈希链日志恢复任务（判断与停机前一致） |
 | POST | `/missions/{id}/ingest` | 离线接收一个生命体征切片（含设备 seq/时钟） |
 | POST | `/missions/{id}/heartbeat` | 处理时间心跳，推动水位线定稿 |
 | GET  | `/missions/{id}/status?subject_id=` | 单人状态、动作及依据 |
@@ -60,14 +61,23 @@ python3 -m compileall -q .        # 编译检查全部 Python 模块
 | POST | `/missions/{id}/resolve` | 军医解除 |
 | POST | `/missions/{id}/close` | 关闭任务，拒绝再写入 |
 | GET  | `/missions/{id}/journal` | 导出日志并校验哈希链完整性 |
+| GET  | `/missions/{id}/conflicts?role=&subject_id=` | 切片内容冲突的角色化视图 |
 | POST | `/missions/{id}/sync/export` · `/sync/merge` | 边缘导出 / 回连安全汇入 |
 
 ## 确定性与延迟
 
 - 窗口长 60 s、发射周期 30 s、允许迟到 120 s（均在冻结协议中）。
 - 定稿延迟上界 = 允许迟到 + 一个发射周期（水位线只在收包或心跳时推进）。
-- 同 `slice_id` 重复投递幂等；同设备同序号换切片按 `SEQ_CONFLICT` 拒绝；
-  定稿窗口后的迟到切片登记 `LATE_AFTER_FINALIZED`，不参与重算。
+- 切片身份 = `slice_id` + 内容指纹（设备、序号、采样时间与**校准前**原始
+  读数的规范化哈希）。指纹一致的重复投递幂等；指纹不一致（如固件回滚后
+  同编号携带不同读数）登记 `SLICE_CONTENT_CONFLICT` 并拒绝入窗——冲突
+  进入哈希链日志与角色化视图（指挥人员见计数/编号、卫生员见差异字段
+  类别、军医见双侧指纹与内容），但绝不产生评估、不推进风险等级。
+- 同设备同序号换切片按 `SEQ_CONFLICT` 拒绝；定稿窗口后的迟到切片登记
+  `LATE_AFTER_FINALIZED`，不参与重算。
+- 每次接受都写 `SLICE_ACCEPTED`（含指纹）入链：离线合并时跨节点指纹
+  不一致整包事务式拒绝；任务重启后由日志重建身份表与未定稿窗口，判断
+  与停机前完全一致。
 - 缺口在窗口定稿时按全局已收序号判定，离线缓存造成的乱序不会被误判成丢片。
 
 `fixtures/incidents.json` 内置高温与高原两段事件切片，测试以随机乱序 + 全量重复

@@ -41,6 +41,17 @@ class EdgeApp:
         except KeyError:
             raise AppError(f"任务不存在: {mission_id}")
 
+    def restore_mission(self, journal_export):
+        """从哈希链日志恢复任务（进程重启后继续，判断与停机前一致）。"""
+        if not isinstance(journal_export, dict) or "entries" not in journal_export:
+            raise AppError("恢复请求必须包含日志 entries")
+        with self._lock:
+            mission = Mission.restore(self.protocol, journal_export)
+            if mission.mission_id in self._missions:
+                raise AppError(f"任务已存在: {mission.mission_id}")
+            self._missions[mission.mission_id] = mission
+            return mission
+
     def run_locked(self, mission_id, fn):
         with self._lock:
             return fn(self.mission(mission_id))

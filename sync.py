@@ -6,10 +6,20 @@
   不能混入同一条时间线）；
 - 按 (设备编号, 本地日志序号) 定序后再汇入，多设备汇入结果与送达顺序
   无关，重复投递幂等；
-- 已定稿评估只按输入窗口去重采纳，内容原样保留，不重算、不补造。
+- 切片接受事实（SLICE_ACCEPTED，含内容指纹）随包汇入，主节点据此重建
+  切片身份表：同 ``slice_id`` 在不同节点指纹不一致属于跨节点数据冲突，
+  整次汇入事务式中止，不写入任何条目；
+- 已定稿评估只按输入窗口去重采纳，内容原样保留，不重算、不补造；
+- 对端登记的切片冲突（SLICE_REJECTED/SLICE_CONTENT_CONFLICT）原样落入
+  主节点哈希链，冲突只留痕，永不参与风险推进。
 """
 
-MERGEABLE_TYPES = {"ASSESSMENT", "SLICE_REJECTED", "ACTION", "OVERRIDE", "RESOLVED"}
+from timeline import TimelineConflict
+
+MERGEABLE_TYPES = {
+    "ASSESSMENT", "SLICE_ACCEPTED", "SLICE_REJECTED",
+    "ACTION", "OVERRIDE", "RESOLVED",
+}
 
 
 class MergeError(ValueError):
@@ -50,6 +60,13 @@ def _replay_state(mission, entry):
     etype = entry["type"]
     if etype == "ASSESSMENT":
         monitor.adopt_assessment(payload["assessment"], entry["at"])
+    elif etype == "SLICE_ACCEPTED":
+        # 重建切片身份表（指纹已在预检中核验）；未定稿窗口重新入窗，
+        # 使主节点在评估未随包到达时仍能自行定稿，已定稿窗口不重算。
+        monitor.timeline.adopt_slice(
+            payload["slice"], payload["fingerprint"],
+            payload.get("received_at"),
+        )
     elif etype == "ACTION":
         monitor.apply_action_entry({
             **payload, "at_hint": entry["at"], "actor_hint": entry["actor"],
@@ -59,6 +76,17 @@ def _replay_state(mission, entry):
     elif etype == "RESOLVED":
         monitor.apply_resolved_entry(payload)
     # SLICE_REJECTED 只落日志，无需状态回放。
+
+
+def _host_identities(mission):
+    """主节点哈希链中已有的切片指纹（含此前合并进来的他节点接受事实）。"""
+    identities = {}
+    for entry in mission.journal.entries:
+        if entry["type"] != "SLICE_ACCEPTED":
+            continue
+        payload = entry["payload"]
+        identities[payload["slice"]["slice_id"]] = payload["fingerprint"]
+    return identities
 
 
 def merge_bundles(mission, bundles):
@@ -110,14 +138,52 @@ def merge_bundles(mission, bundles):
         item[1]["at"], item[0], item[1]["local_seq"]
     ))
 
-    # 3) 幂等回放：同一 (设备, 本地序号) 只生效一次。
+    # 3) 写入前的身份一致性预检：任一 slice_id 跨节点指纹不一致，
+    #    整次汇入中止，不产生任何副作用（事务式）。
+    fingerprints = _host_identities(mission)
+    pending = {}
+    for device_id, entry in ordered:
+        if entry["type"] != "SLICE_ACCEPTED":
+            continue
+        key = (device_id, entry["local_seq"])
+        if key in mission._merged_event_ids:
+            continue
+        payload = entry["payload"]
+        slice_id = payload["slice"]["slice_id"]
+        fingerprint = payload["fingerprint"]
+        known = fingerprints.get(slice_id, pending.get(slice_id))
+        if known is not None and known != fingerprint:
+            report["rejected"].append({
+                "device_id": device_id,
+                "local_seq": entry["local_seq"],
+                "slice_id": slice_id,
+                "reason": "切片内容指纹跨节点不一致，疑似固件回滚后重传",
+                "stored_fingerprint": known,
+                "incoming_fingerprint": fingerprint,
+            })
+            return report
+        pending.setdefault(slice_id, fingerprint)
+
+    # 4) 幂等回放：同一 (设备, 本地序号) 只生效一次。
     for device_id, entry in ordered:
         key = (device_id, entry["local_seq"])
         if key in mission._merged_event_ids:
             report["duplicates"].append({"device_id": device_id,
                                          "local_seq": entry["local_seq"]})
             continue
-        _replay_state(mission, entry)
+        try:
+            _replay_state(mission, entry)
+        except TimelineConflict as exc:
+            # 预检理论上已拦住；防御性处理，保证绝不部分写入。
+            report["rejected"].append({
+                "device_id": device_id,
+                "local_seq": entry["local_seq"],
+                "slice_id": exc.slice_id,
+                "reason": "切片内容指纹跨节点不一致，疑似固件回滚后重传",
+                "stored_fingerprint": exc.stored_fingerprint,
+                "incoming_fingerprint": exc.incoming_fingerprint,
+            })
+            raise MergeError(str(exc))
         journal_entry = mission.journal.append(
             entry["type"], entry["actor"], entry["at"], entry["payload"],
             origin={"device_id": device_id, "local_seq": entry["local_seq"]},

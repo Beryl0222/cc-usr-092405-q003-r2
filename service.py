@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from app import AppError, EdgeApp
 from protocol import FrozenProtocol
-from views import render
+from views import render, render_conflicts
 
 SERVICE_ID = "field-health-alert"
 SERVICE_NAME = "极端作业健康预警"
@@ -77,6 +77,16 @@ class Handler(BaseHTTPRequestHandler):
                 payload = render(self.app.mission(segments[1]), role, subject_id)
                 self._send_json(200, payload)
                 return
+            if len(segments) == 3 and segments[0] == "missions" and segments[2] == "conflicts":
+                # 切片内容冲突按角色裁剪：指挥人员见计数/编号，卫生员见
+                # 差异字段类别，军医见两侧内容与指纹；任务人员无权查看。
+                role = (query.get("role") or [""])[0]
+                subject_id = (query.get("subject_id") or [None])[0]
+                payload = render_conflicts(
+                    self.app.mission(segments[1]), role, subject_id
+                )
+                self._send_json(200, payload)
+                return
             if len(segments) == 3 and segments[0] == "missions" and segments[2] == "journal":
                 mission = self.app.mission(segments[1])
                 ok, broken_at = mission.journal.verify_chain()
@@ -110,6 +120,17 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if len(segments) == 2 and segments[0] == "missions" and segments[1] == "restore":
+                # 进程重启后从哈希链日志恢复任务：身份表、冲突记录与
+                # 未定稿窗口全部重建，后续判断与停机前一致。
+                mission = self.app.restore_mission(data["journal"])
+                self._send_json(201, {
+                    "mission_id": mission.mission_id,
+                    "restored_entries": len(mission.journal.entries),
+                    "closed": mission.closed_at is not None,
+                })
+                return
+
             if len(segments) >= 2 and segments[0] == "missions":
                 mission_id = segments[1]
                 tail = segments[2:]
@@ -119,10 +140,16 @@ class Handler(BaseHTTPRequestHandler):
                         lambda m: m.ingest(data["subject_id"], data["slice"],
                                            data["received_at"]),
                     )
-                    self._send_json(200, {"outcome": result["outcome"],
-                                          "slice_id": result.get("slice_id"),
-                                          "finalized_count": len(
-                                              result.get("finalized", []))})
+                    body = {"outcome": result["outcome"],
+                            "slice_id": result.get("slice_id"),
+                            "finalized_count": len(
+                                result.get("finalized", []))}
+                    rejection = result.get("rejection")
+                    if rejection:
+                        body["rejection_code"] = rejection["code"]
+                        if rejection.get("changed_fields"):
+                            body["changed_fields"] = rejection["changed_fields"]
+                    self._send_json(200, body)
                     return
                 if tail == ["heartbeat"]:
                     emitted = self.app.run_locked(
